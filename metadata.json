@@ -1,0 +1,11 @@
+{
+  "name": "SyncRoom",
+  "description": "Watch YouTube videos together with synchronized playback, chat, and WebRTC video calls.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
