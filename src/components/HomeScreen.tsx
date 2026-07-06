@@ -1,4 +1,4 @@
-import { useState } from "react";
+import React, { useState } from "react";
 import { User } from "../types";
 import { addRecentRoom, getRecentRooms, resetIdentity, saveUser } from "../store";
 import { LogIn, Plus, Users, Settings, X, LogOut, Check, ChevronLeft } from "lucide-react";

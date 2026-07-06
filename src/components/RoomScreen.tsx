@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { User, Message, VideoState } from "../types";
 import { io, Socket } from "socket.io-client";
 import ReactPlayer from "react-player";
@@ -7,7 +7,7 @@ import { cn } from "../lib/utils";
 import { motion, AnimatePresence } from "motion/react";
 
 const IS_DEV = (import.meta as any).env.MODE === "development";
-const SOCKET_URL = IS_DEV ? "http://localhost:3000" : window.location.origin;
+const SOCKET_URL = undefined; // Let Socket.IO automatically use window.location
 
 export function RoomScreen({
   user,
@@ -97,7 +97,7 @@ export function RoomScreen({
       // If we are the first user (host) and someone else joins, send our current video state to sync them up
       if (updatedUsers.length > 1 && updatedUsers[0].id === user.id) {
         const time = playerRef.current?.getCurrentTime?.() || 0;
-        s.emit("video-update", { videoUrl, isPlaying, currentTime: time });
+        s.emit("video-update", { videoUrl: videoUrlRef.current, isPlaying: isPlayingRef.current, currentTime: time });
         initiateCall();
       }
     });
@@ -123,7 +123,7 @@ export function RoomScreen({
 
     s.on("video-state", (state: VideoState) => {
       isSyncingRef.current = true;
-      if (state.videoUrl !== undefined && state.videoUrl !== videoUrl) {
+      if (state.videoUrl !== undefined && state.videoUrl !== videoUrlRef.current) {
         setVideoUrl(state.videoUrl);
         setUrlInput(state.videoUrl);
         setPlayerError(false);
