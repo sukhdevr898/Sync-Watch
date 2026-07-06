@@ -71,6 +71,8 @@ export function RoomScreen({
   const [selectedAudioOutput, setSelectedAudioOutput] = useState<string>("");
 
   const pcRef = useRef<RTCPeerConnection | null>(null);
+  const localStreamRef = useRef<MediaStream | null>(null);
+  const socketRef = useRef<Socket | null>(null);
   const localVideoRef = useRef<HTMLVideoElement>(null);
   const remoteVideoRef = useRef<HTMLVideoElement>(null);
 
@@ -79,11 +81,13 @@ export function RoomScreen({
   const lastStateUpdateRef = useRef(0);
   const ignoreNextTimeUpdateRef = useRef(false);
   const pendingSeekRef = useRef<number | null>(null);
+  const pendingCandidates = useRef<any[]>([]);
 
   // Initialize Socket
   useEffect(() => {
     const s = io(SOCKET_URL);
     setSocket(s);
+    socketRef.current = s;
 
     s.on("user-joined", (updatedUsers: User[]) => {
       const newUsers = updatedUsers.filter(u => !usersRef.current.find(old => old.id === u.id));
@@ -159,10 +163,18 @@ export function RoomScreen({
           const answer = await pc.createAnswer();
           await pc.setLocalDescription(answer);
           s.emit("webrtc-signal", pc.localDescription);
+          pendingCandidates.current.forEach(c => pc.addIceCandidate(new RTCIceCandidate(c)).catch(console.error));
+          pendingCandidates.current = [];
         } else if (signal.type === "answer") {
           await pc.setRemoteDescription(new RTCSessionDescription(signal));
+          pendingCandidates.current.forEach(c => pc.addIceCandidate(new RTCIceCandidate(c)).catch(console.error));
+          pendingCandidates.current = [];
         } else if (signal.type === "candidate") {
-          await pc.addIceCandidate(new RTCIceCandidate(signal.candidate));
+          if (pc.remoteDescription) {
+            await pc.addIceCandidate(new RTCIceCandidate(signal.candidate));
+          } else {
+            pendingCandidates.current.push(signal.candidate);
+          }
         }
       } catch (err) {
         console.error("WebRTC Error handling signal", err);
@@ -203,14 +215,14 @@ export function RoomScreen({
   // Initialize Media Devices & WebRTC
   const initMedia = async (deviceId?: string) => {
     try {
-      if (localStream) {
-        localStream.getTracks().forEach(t => t.stop());
+      if (localStreamRef.current) {
+        localStreamRef.current.getTracks().forEach(t => t.stop());
       }
       const constraints: MediaStreamConstraints = {
         audio: true,
         video: deviceId 
-          ? { deviceId: { exact: deviceId }, width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } } 
-          : { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } },
+          ? { deviceId: { exact: deviceId }, width: { ideal: 640 }, height: { ideal: 360 }, frameRate: { ideal: 24 } } 
+          : { width: { ideal: 640 }, height: { ideal: 360 }, frameRate: { ideal: 24 } },
       };
       const stream = await navigator.mediaDevices.getUserMedia(constraints);
       
@@ -219,6 +231,7 @@ export function RoomScreen({
       stream.getVideoTracks().forEach(t => (t.enabled = !isVideoOff));
       
       setLocalStream(stream);
+      localStreamRef.current = stream;
 
       // Enumerate cameras for switching
       const devices = await navigator.mediaDevices.enumerateDevices();
@@ -236,7 +249,11 @@ export function RoomScreen({
         const senders = pcRef.current.getSenders();
         stream.getTracks().forEach(track => {
           const sender = senders.find(s => s.track?.kind === track.kind);
-          if (sender) sender.replaceTrack(track);
+          if (sender) {
+            sender.replaceTrack(track).catch(console.error);
+          } else {
+            pcRef.current!.addTrack(track, stream);
+          }
         });
       }
       return stream;
@@ -250,12 +267,15 @@ export function RoomScreen({
 
   const setupWebRTC = () => {
     const pc = new RTCPeerConnection({
-      iceServers: [{ urls: "stun:stun.l.google.com:19302" }]
+      iceServers: [
+        { urls: "stun:stun.l.google.com:19302" },
+        { urls: "stun:stun1.l.google.com:19302" }
+      ]
     });
 
     pc.onicecandidate = (event) => {
-      if (event.candidate && socket) {
-        socket.emit("webrtc-signal", { type: "candidate", candidate: event.candidate });
+      if (event.candidate && socketRef.current) {
+        socketRef.current.emit("webrtc-signal", { type: "candidate", candidate: event.candidate });
       }
     };
 
@@ -263,8 +283,8 @@ export function RoomScreen({
       setRemoteStream(event.streams[0]);
     };
 
-    if (localStream) {
-      localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
+    if (localStreamRef.current) {
+      localStreamRef.current.getTracks().forEach(track => pc.addTrack(track, localStreamRef.current!));
     }
 
     pcRef.current = pc;
@@ -276,16 +296,13 @@ export function RoomScreen({
     const pc = pcRef.current!;
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
-    socket?.emit("webrtc-signal", pc.localDescription);
+    socketRef.current?.emit("webrtc-signal", pc.localDescription);
   };
 
   useEffect(() => {
     // Request media when tab is first selected, or component mounts if it's default
     initMedia().then((stream) => {
-      setupWebRTC();
-      if (stream && pcRef.current) {
-        stream.getTracks().forEach(track => pcRef.current!.addTrack(track, stream));
-      }
+      if (!pcRef.current) setupWebRTC();
       if (socket) {
         socket.emit("join-room", { roomId, user });
       }
@@ -391,16 +408,16 @@ export function RoomScreen({
   };
 
   const toggleMute = () => {
-    if (localStream) {
-      const audioTracks = localStream.getAudioTracks();
+    if (localStreamRef.current) {
+      const audioTracks = localStreamRef.current.getAudioTracks();
       audioTracks.forEach(track => { track.enabled = isMuted; }); // isMuted true means currently muted, so we enable
       setIsMuted(!isMuted);
     }
   };
 
   const toggleVideo = () => {
-    if (localStream) {
-      const videoTracks = localStream.getVideoTracks();
+    if (localStreamRef.current) {
+      const videoTracks = localStreamRef.current.getVideoTracks();
       videoTracks.forEach(track => { track.enabled = isVideoOff; });
       setIsVideoOff(!isVideoOff);
     }
