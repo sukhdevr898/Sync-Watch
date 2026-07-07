@@ -1,5 +1,5 @@
 {
-  "name": "SyncRoom",
+  "name": "Sync Watch",
   "description": "Watch YouTube videos together with synchronized playback, chat, and WebRTC video calls.",
   "requestFramePermissions": [
     "camera",

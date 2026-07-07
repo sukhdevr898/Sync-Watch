@@ -1,7 +1,7 @@
 import React, { useState } from "react";
 import { User } from "../types";
 import { addRecentRoom, getRecentRooms, resetIdentity, saveUser } from "../store";
-import { LogIn, Plus, Users, Settings, X, LogOut, Check, ChevronLeft } from "lucide-react";
+import { LogIn, Plus, Users, Settings, LogOut, Check, ChevronRight, Play } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 
 export function HomeScreen({ 
@@ -69,7 +69,6 @@ export function HomeScreen({
   const handleSaveName = () => {
     if (editName.trim() && editName !== user.name) {
       saveUser(editName.trim());
-      // For simplicity, we just reload to apply identity change globally
       window.location.reload();
     }
   };
@@ -80,7 +79,7 @@ export function HomeScreen({
   };
 
   return (
-    <div className="min-h-screen bg-[#fcfcfc] dark:bg-[#06090e] text-gray-900 dark:text-gray-100 pb-24 relative overflow-hidden font-sans">
+    <div className="min-h-screen bg-[#000000] text-gray-100 relative overflow-hidden font-sans flex flex-col">
       {/* Toast Notification */}
       <AnimatePresence>
         {errorMsg && (
@@ -88,89 +87,78 @@ export function HomeScreen({
             initial={{ opacity: 0, y: -20, x: "-50%" }}
             animate={{ opacity: 1, y: 0, x: "-50%" }}
             exit={{ opacity: 0, y: -20, x: "-50%" }}
-            className="absolute top-6 left-1/2 z-50 bg-red-500/90 backdrop-blur-md text-white px-6 py-3 rounded-2xl text-sm font-medium shadow-lg whitespace-nowrap"
+            className="absolute top-12 left-1/2 z-50 bg-[#222] border border-white/10 text-white px-5 py-3 rounded-full text-sm font-medium shadow-2xl whitespace-nowrap flex items-center gap-2"
           >
+            <div className="w-2 h-2 rounded-full bg-red-500" />
             {errorMsg}
           </motion.div>
         )}
       </AnimatePresence>
 
-      {/* Top Bar */}
-      <div className="max-w-2xl mx-auto px-6 pt-16 pb-8 flex items-center justify-between">
-        <div className="flex items-center gap-4">
-          <div className="w-14 h-14 rounded-full bg-gradient-to-tr from-blue-500 to-indigo-500 flex items-center justify-center text-white font-semibold text-xl uppercase shadow-md shadow-blue-500/20">
-            {user.name.charAt(0)}
+      {/* Top App Bar (Android Style) */}
+      <div className="px-5 pt-12 pb-4 flex items-center justify-between bg-[#000000] shrink-0 sticky top-0 z-20">
+        <h1 className="text-2xl font-bold tracking-tight text-white flex items-center gap-2">
+          <div className="w-8 h-8 rounded-xl bg-blue-600 flex items-center justify-center shadow-lg shadow-blue-500/20">
+            <Play className="w-4 h-4 text-white fill-white ml-0.5" />
           </div>
-          <div>
-            <p className="text-sm text-gray-500 dark:text-gray-400 font-medium">Welcome back,</p>
-            <h2 className="text-2xl font-bold tracking-tight">{user.name}</h2>
-          </div>
-        </div>
+          Sync Watch
+        </h1>
         <button 
           onClick={() => setShowSettings(true)}
-          className="w-12 h-12 rounded-2xl bg-white dark:bg-[#111724] border border-gray-200/50 dark:border-gray-800 flex items-center justify-center text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-[#1A2333] transition-colors shadow-sm"
+          className="w-10 h-10 rounded-full bg-[#111] border border-white/5 flex items-center justify-center text-gray-300 font-bold uppercase shadow-sm active:scale-95 transition-transform"
         >
-          <Settings className="w-5 h-5" />
+          {user.name.charAt(0)}
         </button>
       </div>
 
-      <div className="max-w-2xl mx-auto px-6 space-y-8">
-        {/* Actions */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-          <button
-            onClick={handleCreateRoom}
-            disabled={isJoining}
-            className="flex flex-col items-center justify-center gap-4 p-8 bg-white dark:bg-[#111724] border border-gray-200/50 dark:border-gray-800 rounded-[2rem] active:scale-[0.98] transition-all hover:shadow-lg hover:shadow-blue-500/5 dark:hover:shadow-blue-500/10 group"
-          >
-            <div className="w-14 h-14 rounded-2xl bg-blue-50 dark:bg-blue-500/10 flex items-center justify-center text-blue-600 dark:text-blue-400 group-hover:scale-110 transition-transform duration-300">
-              <Plus className="w-6 h-6" />
-            </div>
-            <span className="font-semibold text-lg">Create Room</span>
-          </button>
-
-          <form
-            onSubmit={handleJoin}
-            className="flex flex-col items-center justify-center gap-4 p-8 bg-white dark:bg-[#111724] border border-gray-200/50 dark:border-gray-800 rounded-[2rem] hover:shadow-lg hover:shadow-indigo-500/5 dark:hover:shadow-indigo-500/10 group relative"
-          >
-            <div className="w-14 h-14 rounded-2xl bg-indigo-50 dark:bg-indigo-500/10 flex items-center justify-center text-indigo-600 dark:text-indigo-400 group-focus-within:scale-110 transition-transform duration-300">
+      <div className="flex-1 overflow-y-auto px-5 pt-4 pb-32 max-w-2xl mx-auto w-full space-y-8">
+        
+        {/* Join Room Card */}
+        <div className="space-y-3">
+          <h2 className="text-[13px] font-bold text-gray-500 uppercase tracking-wider ml-1">Join a Room</h2>
+          <form onSubmit={handleJoin} className="bg-[#111] rounded-[2rem] p-2 pr-3 shadow-lg border border-white/5 flex items-center focus-within:border-white/20 transition-colors">
+            <div className="pl-4 pr-2 text-gray-500">
               <LogIn className="w-6 h-6" />
             </div>
-            <div className="w-full">
-              <input
-                type="text"
-                value={joinCode}
-                onChange={(e) => setJoinCode(e.target.value.toUpperCase())}
-                placeholder="ENTER CODE"
-                maxLength={6}
-                className="w-full bg-gray-50 dark:bg-[#0A0F18] border border-transparent focus:border-indigo-500/50 rounded-xl py-3 text-center font-bold tracking-widest placeholder:text-gray-400 dark:placeholder:text-gray-600 outline-none uppercase transition-all"
-              />
-            </div>
-            {/* hidden submit for form */}
-            <button type="submit" className="hidden" />
+            <input
+              type="text"
+              value={joinCode}
+              onChange={(e) => setJoinCode(e.target.value.toUpperCase())}
+              placeholder="Enter 6-digit code"
+              maxLength={6}
+              className="flex-1 bg-transparent py-4 text-base font-bold tracking-widest placeholder:text-gray-600 outline-none uppercase text-white"
+            />
+            <button 
+              type="submit" 
+              disabled={isJoining || joinCode.length !== 6}
+              className="px-6 py-3.5 bg-white hover:bg-gray-200 disabled:bg-gray-800 disabled:text-gray-500 text-black font-bold rounded-[1.5rem] transition-colors shadow-md disabled:shadow-none"
+            >
+              Join
+            </button>
           </form>
         </div>
 
         {/* Recent Rooms */}
         {recentRooms.length > 0 && (
-          <div className="space-y-5 pt-6">
-            <h3 className="text-lg font-semibold tracking-tight">Recent Rooms</h3>
-            <div className="grid gap-3">
+          <div className="space-y-3">
+            <h2 className="text-[13px] font-bold text-gray-500 uppercase tracking-wider ml-1">Recent Rooms</h2>
+            <div className="space-y-2">
               {recentRooms.map((roomId) => (
                 <button
                   key={roomId}
                   onClick={() => onJoinRoom(roomId)}
-                  className="w-full flex items-center justify-between p-4 bg-white dark:bg-[#111724] border border-gray-200/50 dark:border-gray-800 rounded-2xl active:scale-[0.99] transition-all hover:shadow-md text-left group"
+                  className="w-full flex items-center justify-between p-4 bg-[#111] rounded-[1.5rem] active:scale-[0.98] transition-all text-left group border border-white/5"
                 >
                   <div className="flex items-center gap-4">
-                    <div className="w-12 h-12 rounded-xl bg-gray-50 dark:bg-[#0A0F18] border border-gray-100 dark:border-gray-800 flex items-center justify-center group-hover:bg-blue-50 dark:group-hover:bg-blue-500/10 transition-colors">
-                      <Users className="w-5 h-5 text-gray-400 dark:text-gray-500 group-hover:text-blue-500 transition-colors" />
+                    <div className="w-12 h-12 rounded-[1rem] bg-[#1a1a1a] flex items-center justify-center text-blue-500">
+                      <Users className="w-5 h-5" />
                     </div>
                     <div>
-                      <p className="font-semibold text-lg tracking-wide">{roomId}</p>
-                      <p className="text-xs font-medium text-gray-500 dark:text-gray-500">Tap to rejoin</p>
+                      <p className="font-bold text-lg tracking-wide text-white">{roomId}</p>
+                      <p className="text-sm font-medium text-gray-500">Tap to rejoin</p>
                     </div>
                   </div>
-                  <ChevronLeft className="w-5 h-5 rotate-180 text-gray-300 dark:text-gray-700 group-hover:text-gray-400 transition-colors" />
+                  <ChevronRight className="w-5 h-5 text-gray-600" />
                 </button>
               ))}
             </div>
@@ -178,56 +166,72 @@ export function HomeScreen({
         )}
       </div>
 
-      {/* Settings Modal */}
+      {/* FAB (Floating Action Button) for Android Feel */}
+      <div className="fixed bottom-8 right-6 z-30">
+        <button
+          onClick={handleCreateRoom}
+          disabled={isJoining}
+          className="flex items-center gap-3 bg-blue-600 hover:bg-blue-500 text-white pl-5 pr-6 py-4 rounded-[2rem] shadow-[0_8px_30px_rgb(59,130,246,0.3)] active:scale-95 transition-all font-bold text-base"
+        >
+          <Plus className="w-6 h-6" />
+          Create Room
+        </button>
+      </div>
+
+      {/* Settings Modal - Bottom Sheet Style */}
       <AnimatePresence>
         {showSettings && (
           <motion.div 
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: 20 }}
-            className="fixed inset-0 z-[100] bg-white/95 dark:bg-[#06090e]/95 backdrop-blur-xl flex flex-col items-center pt-24 px-6"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[100] bg-black/80 flex flex-col justify-end backdrop-blur-sm"
           >
-            <div className="w-full max-w-md w-full">
+            <div className="absolute inset-0" onClick={() => setShowSettings(false)} />
+            <motion.div 
+              initial={{ y: "100%" }}
+              animate={{ y: 0 }}
+              exit={{ y: "100%" }}
+              transition={{ type: "spring", damping: 25, stiffness: 200 }}
+              className="bg-[#111] rounded-t-[2rem] p-6 relative z-10 border-t border-white/10 shadow-2xl"
+            >
+              <div className="w-12 h-1.5 bg-gray-700 rounded-full mx-auto mb-6" />
+              
               <div className="flex items-center justify-between mb-8">
-                <h2 className="text-2xl font-bold tracking-tight">Settings</h2>
-                <button 
-                  onClick={() => setShowSettings(false)}
-                  className="w-12 h-12 rounded-2xl bg-gray-100 dark:bg-[#111724] flex items-center justify-center text-gray-600 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-[#1A2333] transition-colors"
-                >
-                  <X className="w-5 h-5" />
-                </button>
+                <h2 className="text-2xl font-bold tracking-tight text-white">Settings</h2>
               </div>
-              <div className="space-y-8">
-                <div className="space-y-3">
-                  <label className="text-sm font-semibold text-gray-500 dark:text-gray-400">Change Name</label>
-                  <div className="flex gap-2">
+              
+              <div className="space-y-8 pb-safe">
+                <div className="space-y-4">
+                  <label className="text-[13px] font-bold text-gray-500 uppercase tracking-wider ml-1">Your Name</label>
+                  <div className="flex gap-2 bg-[#1a1a1a] rounded-[1.5rem] p-2 border border-white/5">
                     <input
                       type="text"
                       value={editName}
                       onChange={(e) => setEditName(e.target.value)}
-                      className="flex-1 px-5 py-4 text-lg bg-gray-50 dark:bg-[#111724] border border-gray-200/50 dark:border-gray-800 rounded-2xl outline-none focus:ring-2 focus:ring-blue-500/50 transition-all font-medium"
+                      className="flex-1 px-4 py-3 text-base bg-transparent border-none outline-none text-white font-medium placeholder:text-gray-600"
+                      placeholder="Enter new name"
                     />
                     <button 
                       onClick={handleSaveName}
-                      className="px-6 bg-blue-600 hover:bg-blue-700 text-white rounded-2xl transition-colors flex items-center justify-center shadow-md shadow-blue-500/20"
+                      className="px-6 bg-white hover:bg-gray-200 text-black rounded-[1rem] transition-colors flex items-center justify-center font-bold"
                     >
-                      <Check className="w-6 h-6" />
+                      <Check className="w-5 h-5" />
                     </button>
                   </div>
                 </div>
 
-                <div className="space-y-4 pt-6 mt-6 border-t border-gray-200/50 dark:border-gray-800">
-                  <label className="text-sm font-semibold text-gray-500 dark:text-gray-400">Danger Zone</label>
+                <div className="pt-2">
                   <button 
                     onClick={handleReset}
-                    className="w-full flex items-center justify-center gap-3 p-5 text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-500/10 hover:bg-red-100 dark:hover:bg-red-500/20 rounded-2xl font-semibold transition-colors"
+                    className="w-full flex items-center justify-center gap-3 p-4 text-red-500 bg-red-500/10 hover:bg-red-500/20 rounded-[1.5rem] font-bold transition-colors border border-red-500/10"
                   >
                     <LogOut className="w-5 h-5" />
-                    Reset Identity & Clear Data
+                    Sign Out & Clear Data
                   </button>
                 </div>
               </div>
-            </div>
+            </motion.div>
           </motion.div>
         )}
       </AnimatePresence>

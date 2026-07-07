@@ -32,6 +32,7 @@ function loadStorage(): StorageData {
   if (fs.existsSync(STORAGE_FILE)) {
     try {
       const data = fs.readFileSync(STORAGE_FILE, "utf-8");
+      if (data.trim() === "") return { rooms: {} };
       return JSON.parse(data);
     } catch (e) {
       console.error("Error reading storage", e);

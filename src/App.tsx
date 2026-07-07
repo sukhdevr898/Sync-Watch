@@ -9,7 +9,6 @@ import { WelcomeScreen } from "./components/WelcomeScreen";
 import { HomeScreen } from "./components/HomeScreen";
 import { RoomScreen } from "./components/RoomScreen";
 import { getUser } from "./store";
-import { ThemeToggle } from "./components/ThemeToggle";
 import { motion, AnimatePresence } from "motion/react";
 
 type ScreenState = "welcome" | "home" | "room";
@@ -52,14 +51,8 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen w-full bg-[#fcfcfc] dark:bg-[#06090e] text-gray-900 dark:text-gray-100 overflow-x-hidden selection:bg-blue-500/30 transition-colors duration-500 font-sans">
+    <div className="min-h-screen w-full bg-[#000000] text-gray-100 overflow-x-hidden selection:bg-blue-500/30 transition-colors duration-500 font-sans">
       
-      {currentScreen !== "room" && (
-        <div className="absolute top-6 right-6 z-50">
-          <ThemeToggle />
-        </div>
-      )}
-
       <AnimatePresence mode="wait">
         {currentScreen === "welcome" && (
           <motion.div key="welcome" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>

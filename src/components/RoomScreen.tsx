@@ -2,12 +2,52 @@ import React, { useState, useEffect, useRef } from "react";
 import { User, Message, VideoState } from "../types";
 import { io, Socket } from "socket.io-client";
 import ReactPlayer from "react-player";
-import { Copy, ChevronLeft, Send, Users, Search, MessageCircle, Mic, MicOff, Video, VideoOff, SwitchCamera, X, AlertCircle, RefreshCw, Play, Volume2, Settings } from "lucide-react";
+import { Copy, ChevronLeft, Send, Users, Search, MessageCircle, Mic, MicOff, Video, VideoOff, SwitchCamera, X, AlertCircle, RefreshCw, Play, Volume2, Settings, Wifi, PhoneOff } from "lucide-react";
 import { cn } from "../lib/utils";
 import { motion, AnimatePresence } from "motion/react";
 
-const IS_DEV = (import.meta as any).env.MODE === "development";
 const SOCKET_URL = undefined; // Let Socket.IO automatically use window.location
+
+// Connection Indicator Component
+function ConnectionIndicator({ status, latency }: { status: string, latency: number | null }) {
+  const getStatusColor = () => {
+    if (status === "connected") return "bg-emerald-500";
+    if (status === "connecting" || status === "waiting") return "bg-amber-500";
+    return "bg-red-500";
+  };
+
+  const getStatusText = () => {
+    if (status === "waiting") return "Waiting for peer";
+    if (status === "connecting") return "Connecting...";
+    if (status === "disconnected") return "Disconnected";
+    return "Connected";
+  };
+
+  return (
+    <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-black/60 backdrop-blur-xl border border-white/10 shadow-lg select-none">
+      <div className="relative flex items-center justify-center w-2 h-2">
+        {(status === "connecting" || status === "waiting") && (
+          <span className="absolute inline-flex w-3 h-3 rounded-full opacity-75 animate-ping bg-amber-500" />
+        )}
+        <div className={cn("w-2 h-2 rounded-full", getStatusColor())} />
+      </div>
+      <span className="text-[11px] font-semibold text-white/90 tracking-wide">
+        {getStatusText()}
+      </span>
+      {status === "connected" && latency !== null && (
+        <>
+          <div className="w-px h-3 bg-white/20 mx-1" />
+          <div className="flex items-center gap-1 opacity-90" title="WebRTC Latency">
+            <Wifi className="w-3 h-3 text-white/50" />
+            <span className={cn("text-[11px] font-mono", latency < 100 ? "text-emerald-400" : latency < 300 ? "text-amber-400" : "text-red-400")}>
+              {latency}ms
+            </span>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
 
 export function RoomScreen({
   user,
@@ -39,8 +79,8 @@ export function RoomScreen({
   const [isSearching, setIsSearching] = useState(false);
   const [searchPage, setSearchPage] = useState(0);
   const [hasMoreSearch, setHasMoreSearch] = useState(true);
-  const [activeTab, setActiveTab] = useState<"video-call" | "search">("video-call");
   
+  const [showSearch, setShowSearch] = useState(false);
   const [showChat, setShowChat] = useState(false);
   const [hasNewMessage, setHasNewMessage] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
@@ -69,6 +109,10 @@ export function RoomScreen({
   const [callVolume, setCallVolume] = useState(1);
   const [audioOutputDevices, setAudioOutputDevices] = useState<MediaDeviceInfo[]>([]);
   const [selectedAudioOutput, setSelectedAudioOutput] = useState<string>("");
+  const [mediaError, setMediaError] = useState<string | null>(null);
+  
+  const [connectionStatus, setConnectionStatus] = useState<"connecting" | "connected" | "disconnected" | "waiting">("waiting");
+  const [latency, setLatency] = useState<number | null>(null);
 
   const pcRef = useRef<RTCPeerConnection | null>(null);
   const localStreamRef = useRef<MediaStream | null>(null);
@@ -83,7 +127,26 @@ export function RoomScreen({
   const pendingSeekRef = useRef<number | null>(null);
   const pendingCandidates = useRef<any[]>([]);
 
-  // Initialize Socket
+  useEffect(() => {
+    const interval = setInterval(async () => {
+      if (pcRef.current && (pcRef.current.iceConnectionState === "connected" || pcRef.current.iceConnectionState === "completed")) {
+        try {
+          const stats = await pcRef.current.getStats();
+          let currentLatency = 0;
+          stats.forEach(report => {
+            if (report.type === "candidate-pair" && report.state === "succeeded") {
+              if (report.currentRoundTripTime !== undefined) {
+                currentLatency = report.currentRoundTripTime * 1000;
+              }
+            }
+          });
+          if (currentLatency > 0) setLatency(Math.round(currentLatency));
+        } catch (e) {}
+      }
+    }, 2000);
+    return () => clearInterval(interval);
+  }, []);
+
   useEffect(() => {
     const s = io(SOCKET_URL);
     setSocket(s);
@@ -98,7 +161,6 @@ export function RoomScreen({
       }
       setUsers(updatedUsers);
       
-      // If we are the first user (host) and someone else joins, send our current video state to sync them up
       if (updatedUsers.length > 1 && updatedUsers[0].id === user.id) {
         const time = playerRef.current?.getCurrentTime?.() || 0;
         s.emit("video-update", { videoUrl: videoUrlRef.current, isPlaying: isPlayingRef.current, currentTime: time });
@@ -111,11 +173,13 @@ export function RoomScreen({
       leftUsers.forEach(u => showToast(`👋 ${u.name} left the room`));
       setUsers(updatedUsers);
       setRemoteStream(null);
+      setConnectionStatus("waiting");
+      setLatency(null);
       if (pcRef.current) {
         pcRef.current.close();
         pcRef.current = null;
       }
-      setupWebRTC(); // re-setup peer connection for next user
+      setupWebRTC();
     });
 
     s.on("chat-message", (msg: Message) => {
@@ -127,17 +191,23 @@ export function RoomScreen({
 
     s.on("video-state", (state: VideoState) => {
       isSyncingRef.current = true;
+      let isNewVideo = false;
       if (state.videoUrl !== undefined && state.videoUrl !== videoUrlRef.current) {
         setVideoUrl(state.videoUrl);
         setUrlInput(state.videoUrl);
         setPlayerError(false);
+        isNewVideo = true;
       }
       if (state.isPlaying !== undefined) setIsPlaying(state.isPlaying);
       if (state.currentTime !== undefined) {
-        if (playerRef.current && typeof playerRef.current.getCurrentTime === 'function') {
-          const currentLocal = playerRef.current.getCurrentTime();
-          if (Math.abs(currentLocal - state.currentTime) > 2) {
-            playerRef.current.seekTo(state.currentTime, "seconds");
+        if (!isNewVideo && playerRef.current && typeof playerRef.current.getCurrentTime === 'function') {
+          try {
+            const currentLocal = playerRef.current.getCurrentTime();
+            if (Math.abs(currentLocal - state.currentTime) > 2) {
+              playerRef.current.seekTo(state.currentTime, "seconds");
+            }
+          } catch (e) {
+            console.error("Seek error", e);
           }
         } else {
           pendingSeekRef.current = state.currentTime;
@@ -151,7 +221,7 @@ export function RoomScreen({
     });
 
     s.on("webrtc-signal", async (data: { from: string; signal: any }) => {
-      if (data.from === user.id) return; // Ignore our own signals just in case
+      if (data.from === user.id) return;
       const signal = data.signal;
       
       if (!pcRef.current) setupWebRTC();
@@ -188,12 +258,10 @@ export function RoomScreen({
     };
   }, [roomId, user]);
 
-  // Open Chat resets new message dot
   useEffect(() => {
     if (showChat) setHasNewMessage(false);
   }, [showChat]);
 
-  // Attach video streams to elements
   useEffect(() => {
     if (localVideoRef.current && localStream) {
       localVideoRef.current.srcObject = localStream;
@@ -212,7 +280,6 @@ export function RoomScreen({
     }
   }, [remoteStream, selectedAudioOutput, callVolume]);
 
-  // Initialize Media Devices & WebRTC
   const initMedia = async (deviceId?: string) => {
     try {
       if (localStreamRef.current) {
@@ -226,14 +293,12 @@ export function RoomScreen({
       };
       const stream = await navigator.mediaDevices.getUserMedia(constraints);
       
-      // Keep mute/video state if previously toggled
       stream.getAudioTracks().forEach(t => (t.enabled = !isMuted));
       stream.getVideoTracks().forEach(t => (t.enabled = !isVideoOff));
       
       setLocalStream(stream);
       localStreamRef.current = stream;
 
-      // Enumerate cameras for switching
       const devices = await navigator.mediaDevices.enumerateDevices();
       const videoDevices = devices.filter(d => d.kind === "videoinput");
       setCameraDevices(videoDevices);
@@ -245,7 +310,6 @@ export function RoomScreen({
       }
 
       if (pcRef.current) {
-        // Replace tracks in existing connection
         const senders = pcRef.current.getSenders();
         stream.getTracks().forEach(track => {
           const sender = senders.find(s => s.track?.kind === track.kind);
@@ -256,11 +320,12 @@ export function RoomScreen({
           }
         });
       }
+      setMediaError(null);
       return stream;
-    } catch (err) {
+    } catch (err: any) {
       console.error("Error accessing media devices.", err);
-      // Fallback: Don't set a stream, or show a UI indicator
-      // The app should still work for chatting and syncing videos without local media
+      setMediaError(err.message || "Permission denied or no devices found.");
+      showToast("Camera/Microphone access denied.");
       return null;
     }
   };
@@ -272,6 +337,18 @@ export function RoomScreen({
         { urls: "stun:stun1.l.google.com:19302" }
       ]
     });
+
+    pc.oniceconnectionstatechange = () => {
+      const state = pc.iceConnectionState;
+      if (state === "connected" || state === "completed") {
+        setConnectionStatus("connected");
+      } else if (state === "disconnected" || state === "failed" || state === "closed") {
+        setConnectionStatus("disconnected");
+        setLatency(null);
+      } else {
+        setConnectionStatus("connecting");
+      }
+    };
 
     pc.onicecandidate = (event) => {
       if (event.candidate && socketRef.current) {
@@ -300,19 +377,18 @@ export function RoomScreen({
   };
 
   useEffect(() => {
-    // Request media when tab is first selected, or component mounts if it's default
     initMedia().then((stream) => {
       if (!pcRef.current) setupWebRTC();
       if (socket) {
         socket.emit("join-room", { roomId, user });
       }
     });
-  }, [socket]); // Run when socket is ready
+  }, [socket]);
 
   const emitVideoState = (state: VideoState, force = false) => {
     if (!socket || isSyncingRef.current) return;
     const now = Date.now();
-    if (!force && now - lastStateUpdateRef.current < 300) return;
+    if (!force && now - lastStateUpdateRef.current < 1000) return;
     lastStateUpdateRef.current = now;
     socket.emit("video-update", state);
   };
@@ -346,6 +422,7 @@ export function RoomScreen({
       setVideoUrl(query);
       setIsPlaying(true);
       setPlayerError(false);
+      setShowSearch(false);
       socket?.emit("video-update", { videoUrl: query, isPlaying: true, currentTime: 0 });
     } else {
       setIsSearching(true);
@@ -390,6 +467,7 @@ export function RoomScreen({
     setIsPlaying(true);
     setPlayerError(false);
     setSearchResults([]);
+    setShowSearch(false);
     socket?.emit("video-update", { videoUrl: url, isPlaying: true, currentTime: 0 });
   };
 
@@ -410,7 +488,7 @@ export function RoomScreen({
   const toggleMute = () => {
     if (localStreamRef.current) {
       const audioTracks = localStreamRef.current.getAudioTracks();
-      audioTracks.forEach(track => { track.enabled = isMuted; }); // isMuted true means currently muted, so we enable
+      audioTracks.forEach(track => { track.enabled = isMuted; });
       setIsMuted(!isMuted);
     }
   };
@@ -431,353 +509,322 @@ export function RoomScreen({
     }
   };
 
+  const currentConnectionStatus = users.length > 1 ? connectionStatus : "waiting";
+
   if (roomError) {
     return (
-      <div className="min-h-screen flex flex-col items-center justify-center bg-white dark:bg-[#06090e] p-6 text-center space-y-4">
-        <div className="w-16 h-16 bg-red-100/50 dark:bg-red-500/10 text-red-500 rounded-2xl flex items-center justify-center mx-auto mb-4 border border-red-500/20">
-          <AlertCircle className="w-8 h-8" />
+      <div className="min-h-screen flex flex-col items-center justify-center bg-[#030712] p-6 text-center space-y-4">
+        <div className="w-20 h-20 bg-red-500/10 text-red-500 rounded-3xl flex items-center justify-center mx-auto mb-4 border border-red-500/20 shadow-2xl">
+          <AlertCircle className="w-10 h-10" />
         </div>
-        <h2 className="text-2xl font-bold text-gray-900 dark:text-white">Connection Error</h2>
-        <p className="text-gray-500 dark:text-gray-400">{roomError}</p>
-        <button onClick={onLeave} className="px-6 py-3 bg-gray-900 dark:bg-white text-white dark:text-gray-900 rounded-xl font-medium mt-4 hover:opacity-90 transition-opacity">
-          Go Back
+        <h2 className="text-3xl font-bold text-white tracking-tight">Connection Error</h2>
+        <p className="text-gray-400 max-w-md">{roomError}</p>
+        <button onClick={onLeave} className="px-8 py-3.5 bg-white text-gray-900 rounded-2xl font-bold mt-4 hover:opacity-90 transition-opacity shadow-xl shadow-white/10">
+          Return Home
         </button>
       </div>
     );
   }
 
   return (
-    <div className="h-screen h-[100dvh] overflow-hidden bg-[#fcfcfc] dark:bg-[#06090e] text-gray-900 dark:text-white flex flex-col relative font-sans selection:bg-blue-500/30">
+    <div className="h-screen h-[100dvh] overflow-hidden bg-[#030712] text-gray-100 flex flex-col relative font-sans selection:bg-blue-500/30">
       <AnimatePresence>
         {toast && (
           <motion.div 
             initial={{ opacity: 0, y: -20, x: "-50%" }}
             animate={{ opacity: 1, y: 0, x: "-50%" }}
             exit={{ opacity: 0, y: -20, x: "-50%" }}
-            className="absolute top-20 left-1/2 z-50 pointer-events-none"
+            className="absolute top-24 left-1/2 z-50 pointer-events-none"
           >
-            <div className="bg-black/80 dark:bg-white/90 backdrop-blur-md text-white dark:text-black px-4 py-2.5 rounded-full shadow-lg shadow-black/10 border border-white/10 dark:border-black/10 text-sm font-medium flex items-center gap-2">
+            <div className="bg-white/10 backdrop-blur-xl text-white px-5 py-3 rounded-2xl shadow-2xl border border-white/10 text-sm font-semibold tracking-wide flex items-center gap-2">
               {toast.message}
             </div>
           </motion.div>
         )}
       </AnimatePresence>
       
-      {/* HEADER */}
-      <div className="flex items-center justify-between p-4 bg-white/80 dark:bg-[#06090e]/80 backdrop-blur-md border-b border-gray-200/50 dark:border-gray-800/50 shrink-0 z-10 sticky top-0 shadow-sm">
+      {/* NATIVE APP HEADER */}
+      <div className="flex items-center justify-between px-4 py-3 bg-[#030712] shrink-0 z-20 shadow-md">
         <div className="flex items-center gap-3">
-          <button onClick={onLeave} className="p-2.5 -ml-2 rounded-xl hover:bg-gray-100 dark:hover:bg-gray-800/50 transition-colors text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white">
-            <ChevronLeft className="w-5 h-5" />
+          <button onClick={onLeave} className="p-2 -ml-2 rounded-full hover:bg-white/10 transition-colors text-gray-300 hover:text-white">
+            <ChevronLeft className="w-6 h-6" />
           </button>
           <div className="flex flex-col">
-            <span className="text-sm font-semibold tracking-tight text-gray-900 dark:text-gray-100">SyncRoom</span>
-            <div className="flex items-center gap-2 text-xs text-gray-500 dark:text-gray-400">
-              <span className="font-mono bg-gray-100 dark:bg-gray-800/50 px-1.5 py-0.5 rounded uppercase tracking-wider">{roomId}</span>
-              <button onClick={() => navigator.clipboard.writeText(roomId)} className="hover:text-gray-900 dark:hover:text-white transition-colors" title="Copy Room ID">
-                <Copy className="w-3.5 h-3.5" />
+            <span className="text-lg font-medium tracking-tight text-white flex items-center gap-2">
+              SyncRoom
+            </span>
+            <div className="flex items-center gap-1 text-[11px] text-gray-400">
+              <span className="font-mono">{roomId}</span>
+              <button onClick={() => { navigator.clipboard.writeText(roomId); showToast("Copied"); }} className="hover:text-white p-0.5" title="Copy">
+                <Copy className="w-3 h-3" />
               </button>
             </div>
           </div>
         </div>
-        <div className="flex items-center gap-4">
-          <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-blue-50/50 dark:bg-blue-500/10 text-blue-600 dark:text-blue-400 text-sm font-medium border border-blue-100 dark:border-blue-500/20">
-            <Users className="w-4 h-4" />
-            <span>{users.length}/2</span>
-          </div>
+        <div className="flex items-center gap-3">
+          <ConnectionIndicator status={currentConnectionStatus} latency={latency} />
           <button 
             onClick={() => setShowSettings(!showSettings)}
-            className="relative p-2.5 rounded-xl bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors text-gray-700 dark:text-gray-300"
-            title="Audio Settings"
+            className="p-2 rounded-full hover:bg-white/10 transition-colors text-gray-300 hover:text-white"
           >
             <Settings className="w-5 h-5" />
           </button>
-          <button 
-            onClick={() => setShowChat(!showChat)}
-            className="relative p-2.5 rounded-xl bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors text-gray-700 dark:text-gray-300"
-            title="Toggle Chat"
-          >
-            <MessageCircle className="w-5 h-5" />
-            {hasNewMessage && !showChat && (
-              <span className="absolute top-1.5 right-1.5 w-2.5 h-2.5 bg-blue-500 rounded-full animate-ping" />
-            )}
-            {hasNewMessage && !showChat && (
-              <span className="absolute top-1.5 right-1.5 w-2.5 h-2.5 bg-blue-500 border-2 border-white dark:border-gray-800 rounded-full" />
-            )}
-          </button>
         </div>
       </div>
 
-      <div className="flex-1 flex flex-col max-w-5xl mx-auto w-full w-full overflow-hidden">
-        {/* VIDEO PLAYER SECTION */}
-        <div className="p-4 shrink-0">
-          <div className="relative w-full aspect-video max-h-[45vh] mx-auto bg-black rounded-3xl overflow-hidden shadow-xl border border-gray-200 dark:border-gray-800">
-            {videoUrl ? (
-              playerError ? (
-                <div className="absolute inset-0 flex flex-col items-center justify-center bg-gray-900 text-white space-y-4 p-6 text-center">
-                  <AlertCircle className="w-12 h-12 text-red-500" />
+      {/* MAIN WORKSPACE */}
+      <div className="flex-1 overflow-hidden flex flex-col relative bg-black">
+        {/* Video Player */}
+        <AnimatePresence mode="popLayout">
+          {videoUrl && (
+            <motion.div 
+              initial={{ opacity: 0, height: 0 }}
+              animate={{ opacity: 1, height: "auto" }}
+              exit={{ opacity: 0, height: 0 }}
+              className="w-full aspect-video bg-black relative shrink-0 z-10 shadow-2xl border-b border-white/10"
+            >
+              {playerError && (
+                <div className="absolute inset-0 z-50 flex flex-col items-center justify-center bg-black/80 backdrop-blur-sm text-white space-y-4 p-6 text-center pointer-events-none">
+                  <AlertCircle className="w-10 h-10 text-red-500" />
                   <div>
-                    <h3 className="text-xl font-bold mb-2">Video Failed to Load</h3>
-                    <p className="text-gray-400 max-w-sm text-sm">
-                      We couldn't load the video from the provided URL. It might be broken, private, or unsupported.
+                    <h3 className="text-lg font-bold mb-1">Playback Issue</h3>
+                    <p className="text-gray-400 text-xs max-w-xs mx-auto">
+                      Browser blocked autoplay or video error. Try interacting with the player.
                     </p>
                   </div>
-                  <button 
-                    onClick={() => {
-                      setPlayerError(false);
-                      // Force remount of player by briefly removing URL
-                      const url = videoUrl;
-                      setVideoUrl("");
-                      setTimeout(() => setVideoUrl(url), 100);
-                    }}
-                    className="flex items-center gap-2 px-5 py-2.5 bg-white/10 hover:bg-white/20 rounded-xl transition-colors font-medium text-sm"
-                  >
-                    <RefreshCw className="w-4 h-4" />
-                    Retry Loading
+                  <button onClick={() => setPlayerError(false)} className="pointer-events-auto flex items-center gap-2 px-5 py-2.5 bg-white/20 hover:bg-white/30 rounded-full text-sm font-medium transition-colors">
+                    <X className="w-4 h-4" /> Dismiss
                   </button>
                 </div>
-              ) : (
-                <div className="w-full h-full relative">
-                  <ReactPlayer
-                    ref={playerRef}
-                    url={videoUrl}
-                    width="100%"
-                    height="100%"
-                    playing={isPlaying}
-                    controls={true}
-                    volume={playerVolume}
-                    onReady={() => {
-                      if (pendingSeekRef.current !== null && playerRef.current) {
-                        playerRef.current.seekTo(pendingSeekRef.current, "seconds");
-                        pendingSeekRef.current = null;
-                      }
-                    }}
-                    onPlay={handlePlay}
-                    onPause={handlePause}
-                    onSeeked={() => {
-                      const time = playerRef.current?.getCurrentTime?.() || 0;
-                      handleSeek(time);
-                    }}
-                    onProgress={(state: any) => {
-                      if (ignoreNextTimeUpdateRef.current) {
-                        ignoreNextTimeUpdateRef.current = false;
-                        return;
-                      }
-                      // Optional continuous sync check
-                    }}
-                    onError={(e) => { 
-                      console.error("Player Error:", e);
-                      setPlayerError(true);
-                    }}
-                    config={{
-                      youtube: {
-                        playerVars: { origin: window.location.origin }
-                      }
-                    }}
-                  />
+              )}
+              <ReactPlayer
+                ref={playerRef}
+                url={videoUrl}
+                width="100%"
+                height="100%"
+                playing={isPlaying}
+                controls={true}
+                volume={playerVolume}
+                onReady={() => {
+                  if (pendingSeekRef.current !== null && playerRef.current) {
+                    playerRef.current.seekTo(pendingSeekRef.current, "seconds");
+                    pendingSeekRef.current = null;
+                  }
+                }}
+                onPlay={handlePlay}
+                onPause={handlePause}
+                onSeeked={() => {
+                  const time = playerRef.current?.getCurrentTime?.() || 0;
+                  handleSeek(time);
+                }}
+                onError={(e) => { 
+                  console.error("Player Error:", e);
+                  setPlayerError(true);
+                }}
+                config={{ youtube: { playerVars: { origin: window.location.origin } } }}
+              />
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* Video Call Area */}
+        <div className="flex-1 relative bg-[#0a0a0a] overflow-hidden">
+          {/* Remote Video (Full Size) */}
+          {remoteStream ? (
+            <div className="absolute inset-0">
+               <video ref={remoteVideoRef} autoPlay playsInline className="w-full h-full object-cover" />
+               <div className="absolute top-4 left-4 bg-black/60 backdrop-blur-md px-3 py-1.5 rounded-lg text-xs font-medium text-white shadow-lg border border-white/10">
+                  {users.find(u => u.id !== user.id)?.name}
+               </div>
+            </div>
+          ) : (
+            <div className="absolute inset-0 flex flex-col items-center justify-center text-gray-500 bg-[#111]">
+              <div className="w-20 h-20 rounded-full bg-white/5 flex items-center justify-center mb-4 ring-1 ring-white/10 shadow-inner">
+                <Users className="w-8 h-8 opacity-50 text-white" />
+              </div>
+              <span className="font-medium text-gray-400">Waiting for peer...</span>
+            </div>
+          )}
+
+          {/* Local Video (PiP if remote exists, Full if not) */}
+          <motion.div 
+            layout
+            className={cn(
+              "absolute overflow-hidden bg-black ring-1 ring-white/20 shadow-2xl z-20 transition-all duration-500 ease-in-out",
+              remoteStream 
+                ? "bottom-4 right-4 w-28 md:w-40 aspect-[3/4] rounded-xl" 
+                : "inset-0 w-full h-full"
+            )}
+          >
+            {mediaError ? (
+              <div className="absolute inset-0 flex flex-col items-center justify-center bg-[#030712]/90 backdrop-blur-sm text-center p-4">
+                <div className="w-12 h-12 bg-red-500/10 rounded-full flex items-center justify-center mb-2">
+                  <VideoOff className="w-6 h-6 text-red-500" />
                 </div>
-              )
+                <span className="text-xs font-semibold text-gray-300">Camera Off</span>
+              </div>
             ) : (
-              <div className="absolute inset-0 flex flex-col items-center justify-center text-gray-500">
-                <Play className="w-12 h-12 mb-2 opacity-20" />
-                <p>No video loaded</p>
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* TABS SECTION */}
-        <div className="px-4 pb-4 flex-1 flex flex-col min-h-0">
-          <div className="flex p-1 bg-gray-200/50 dark:bg-gray-800/50 rounded-xl mb-4 shrink-0">
-            <button
-              onClick={() => setActiveTab("video-call")}
-              className={cn(
-                "flex-1 py-2 text-sm font-medium rounded-lg transition-all",
-                activeTab === "video-call" 
-                  ? "bg-white dark:bg-gray-700 shadow-sm text-gray-900 dark:text-white" 
-                  : "text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
-              )}
-            >
-              Video Call
-            </button>
-            <button
-              onClick={() => setActiveTab("search")}
-              className={cn(
-                "flex-1 py-2 text-sm font-medium rounded-lg transition-all",
-                activeTab === "search" 
-                  ? "bg-white dark:bg-gray-700 shadow-sm text-gray-900 dark:text-white" 
-                  : "text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
-              )}
-            >
-              Search & Load
-            </button>
-          </div>
-
-          <div className="flex-1 min-h-0 bg-white dark:bg-[#101B2D] rounded-3xl border border-gray-200 dark:border-gray-800 shadow-sm overflow-hidden flex flex-col">
-            {activeTab === "video-call" && (
-              <div className="flex-1 flex items-center justify-center p-6 gap-6 h-full relative bg-gray-50/50 dark:bg-[#0A0F18]/50">
-                {/* Local Video */}
-                <div className="w-40 sm:w-64 aspect-video bg-gray-900 rounded-3xl overflow-hidden relative shadow-2xl ring-1 ring-white/10 dark:ring-white/5 transition-transform duration-300 hover:scale-[1.02]">
-                  <video
-                    ref={localVideoRef}
-                    autoPlay
-                    playsInline
-                    muted
-                    className={cn("w-full h-full object-cover scale-x-[-1]", isVideoOff && "hidden")}
-                  />
-                  {isVideoOff && (
-                    <div className="absolute inset-0 flex items-center justify-center bg-gray-800/90 backdrop-blur-sm">
-                      <div className="w-12 h-12 sm:w-16 sm:h-16 bg-gray-700 rounded-full flex items-center justify-center text-white text-lg font-bold uppercase shadow-inner border border-white/5">
-                        {user.name.slice(0, 2)}
-                      </div>
+              <>
+                <video
+                  ref={localVideoRef}
+                  autoPlay
+                  playsInline
+                  muted
+                  className={cn("w-full h-full object-cover scale-x-[-1]", isVideoOff && "hidden")}
+                />
+                {isVideoOff && (
+                  <div className="absolute inset-0 flex items-center justify-center bg-[#030712]/90 backdrop-blur-sm">
+                    <div className="w-16 h-16 bg-gradient-to-tr from-blue-600 to-indigo-600 rounded-full flex items-center justify-center text-white text-xl font-bold uppercase shadow-2xl border border-white/20">
+                      {user.name.slice(0, 2)}
                     </div>
-                  )}
-                  <div className="absolute bottom-3 left-3 bg-black/60 backdrop-blur-md px-2.5 py-1.5 rounded-xl text-[10px] sm:text-xs font-medium text-white shadow-sm border border-white/10 flex items-center gap-1.5">
-                    You {isMuted && <MicOff className="w-3.5 h-3.5 text-red-400" />}
                   </div>
-                </div>
-
-                {/* Remote Video */}
-                <div className="w-40 sm:w-64 aspect-video bg-gray-900 rounded-3xl overflow-hidden relative shadow-2xl ring-1 ring-white/10 dark:ring-white/5 transition-transform duration-300 hover:scale-[1.02]">
-                  {remoteStream ? (
-                    <video
-                      ref={remoteVideoRef}
-                      autoPlay
-                      playsInline
-                      className="w-full h-full object-cover"
-                    />
-                  ) : (
-                    <div className="absolute inset-0 flex items-center justify-center text-gray-500 text-xs sm:text-sm flex-col bg-gray-900/50 backdrop-blur-sm">
-                      <Users className="w-6 h-6 sm:w-8 sm:h-8 mb-2 opacity-30" />
-                      <span className="text-center px-2 font-medium opacity-80">Waiting...</span>
-                    </div>
-                  )}
-                  {users.find(u => u.id !== user.id) && (
-                    <div className="absolute bottom-3 left-3 bg-black/60 backdrop-blur-md px-2.5 py-1.5 rounded-xl text-[10px] sm:text-xs font-medium text-white shadow-sm border border-white/10">
-                      {users.find(u => u.id !== user.id)?.name}
-                    </div>
-                  )}
-                </div>
-
-                {/* Call Controls */}
-                <div className="absolute bottom-6 left-1/2 -translate-x-1/2 flex items-center gap-3 bg-white/90 dark:bg-[#111724]/90 backdrop-blur-xl px-5 py-3 rounded-full border border-gray-200/50 dark:border-gray-700/50 shadow-2xl">
-                  <button onClick={toggleMute} className={cn("p-3.5 rounded-full transition-all duration-300 hover:scale-105", isMuted ? "bg-red-500 text-white shadow-lg shadow-red-500/30" : "bg-gray-100/80 hover:bg-gray-200 dark:bg-gray-800/80 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300")}>
-                    {isMuted ? <MicOff className="w-5 h-5" /> : <Mic className="w-5 h-5" />}
-                  </button>
-                  <button onClick={toggleVideo} className={cn("p-3.5 rounded-full transition-all duration-300 hover:scale-105", isVideoOff ? "bg-red-500 text-white shadow-lg shadow-red-500/30" : "bg-gray-100/80 hover:bg-gray-200 dark:bg-gray-800/80 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300")}>
-                    {isVideoOff ? <VideoOff className="w-5 h-5" /> : <Video className="w-5 h-5" />}
-                  </button>
-                  {cameraDevices.length > 1 && (
-                    <button onClick={switchCamera} className="p-3.5 bg-gray-100/80 hover:bg-gray-200 dark:bg-gray-800/80 dark:hover:bg-gray-700 rounded-full transition-all duration-300 hover:scale-105 text-gray-700 dark:text-gray-300">
-                      <SwitchCamera className="w-5 h-5" />
-                    </button>
-                  )}
-                </div>
-              </div>
+                )}
+              </>
             )}
-
-            {activeTab === "search" && (
-              <div className="flex-1 flex flex-col p-6 h-full overflow-hidden">
-                <form onSubmit={handleUrlSubmit} className="flex gap-3 mb-6 shrink-0">
-                  <div className="relative flex-1">
-                    <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
-                    <input
-                      type="text"
-                      value={urlInput}
-                      onChange={(e) => setUrlInput(e.target.value)}
-                      placeholder="Paste YouTube URL or search keywords..."
-                      className="w-full bg-gray-50 dark:bg-gray-800/50 border border-gray-200 dark:border-gray-700 rounded-2xl py-4 pl-12 pr-4 text-sm focus:ring-2 focus:ring-blue-500 outline-none transition-all shadow-sm"
-                    />
-                  </div>
-                  <button disabled={isSearching} type="submit" className="px-6 py-4 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white rounded-2xl text-sm font-semibold transition-colors shadow-sm">
-                    {isSearching ? "Searching..." : "Load / Search"}
-                  </button>
-                </form>
-
-                <div className="flex-1 overflow-y-auto min-h-0 pr-2 pb-4 scrollbar-thin scrollbar-thumb-gray-200 dark:scrollbar-thumb-gray-800">
-                  {searchResults.length > 0 ? (
-                    <div className="flex flex-col gap-3">
-                      {searchResults.map((video, index) => (
-                        <button
-                          key={`${video.id}-${index}`}
-                          onClick={() => handleSelectVideo(video.url)}
-                          className="w-full flex items-center gap-4 p-3 bg-gray-50/50 dark:bg-[#15233A]/50 hover:bg-white dark:hover:bg-[#1A2C47] rounded-2xl transition-all duration-300 text-left border border-transparent hover:border-gray-200 dark:hover:border-gray-700 hover:shadow-md group"
-                        >
-                          <div className="relative w-36 aspect-video rounded-xl overflow-hidden shadow-sm shrink-0">
-                            <img src={video.thumbnail} alt={video.title} className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500" />
-                            <div className="absolute bottom-1.5 right-1.5 bg-black/80 backdrop-blur-sm text-white text-[10px] font-medium px-1.5 py-0.5 rounded shadow">
-                              {video.duration}
-                            </div>
-                            <div className="absolute inset-0 bg-black/20 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
-                              <Play className="w-8 h-8 text-white drop-shadow-md" />
-                            </div>
-                          </div>
-                          <div className="flex-1 min-w-0 py-1 flex flex-col justify-center">
-                            <h4 className="font-semibold text-sm text-gray-900 dark:text-white line-clamp-2 leading-snug mb-1.5 group-hover:text-blue-500 transition-colors">{video.title}</h4>
-                            <p className="text-xs font-medium text-gray-500 dark:text-gray-400">{video.author}</p>
-                          </div>
-                        </button>
-                      ))}
-                      
-                      {hasMoreSearch && (
-                        <div className="pt-4 pb-2 flex justify-center">
-                          <button 
-                            onClick={handleLoadMore}
-                            disabled={isSearching}
-                            className="px-6 py-2.5 bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-900 dark:text-white text-sm font-medium rounded-xl transition-colors disabled:opacity-50"
-                          >
-                            {isSearching ? "Loading..." : "Load More"}
-                          </button>
-                        </div>
-                      )}
-                    </div>
-                  ) : (
-                    <div className="h-full flex flex-col items-center justify-center text-gray-400">
-                      <div className="w-16 h-16 bg-gray-100 dark:bg-gray-800 rounded-2xl flex items-center justify-center mb-4 text-gray-300 dark:text-gray-600">
-                        <Search className="w-8 h-8" />
-                      </div>
-                      <p className="text-sm font-medium text-gray-600 dark:text-gray-400">Search for videos to play together</p>
-                      <p className="text-xs mt-1 opacity-70">Paste a YouTube link or type keywords</p>
-                    </div>
-                  )}
-                </div>
-              </div>
+            <div className="absolute bottom-2 left-2 bg-black/60 backdrop-blur-md px-2 py-1 rounded text-[10px] font-medium text-white flex items-center gap-1">
+              You {isMuted && <MicOff className="w-3 h-3 text-red-400" />}
+            </div>
+            {cameraDevices.length > 1 && !remoteStream && (
+               <button onClick={switchCamera} className="absolute top-4 right-4 p-3 bg-black/60 hover:bg-black/80 rounded-full text-white backdrop-blur-md transition-colors">
+                 <SwitchCamera className="w-5 h-5" />
+               </button>
             )}
-          </div>
+          </motion.div>
         </div>
       </div>
 
-      {/* CHAT OVERLAY */}
+      {/* BOTTOM ACTION BAR (Native Android Style) */}
+      <div className="shrink-0 bg-[#0A0E17] border-t border-white/5 pb-safe px-4 py-3 flex items-center justify-evenly z-30 shadow-[0_-10px_40px_rgba(0,0,0,0.5)]">
+        <button onClick={toggleMute} className={cn("p-3.5 rounded-full transition-all shadow-md", isMuted ? "bg-white text-black" : "bg-white/10 text-white hover:bg-white/20")}>
+          {isMuted ? <MicOff className="w-6 h-6" /> : <Mic className="w-6 h-6" />}
+        </button>
+        <button onClick={toggleVideo} className={cn("p-3.5 rounded-full transition-all shadow-md", isVideoOff ? "bg-white text-black" : "bg-white/10 text-white hover:bg-white/20")}>
+          {isVideoOff ? <VideoOff className="w-6 h-6" /> : <Video className="w-6 h-6" />}
+        </button>
+        <button onClick={() => { setShowSearch(!showSearch); setShowChat(false); }} className={cn("p-3.5 rounded-full transition-all shadow-md", showSearch ? "bg-blue-600 text-white shadow-blue-500/20" : "bg-white/10 text-white hover:bg-white/20")}>
+          <Search className="w-6 h-6" />
+        </button>
+        <button onClick={() => { setShowChat(!showChat); setShowSearch(false); }} className={cn("relative p-3.5 rounded-full transition-all shadow-md", showChat ? "bg-blue-600 text-white shadow-blue-500/20" : "bg-white/10 text-white hover:bg-white/20")}>
+          <MessageCircle className="w-6 h-6" />
+          {hasNewMessage && !showChat && (
+            <span className="absolute top-0 right-0 w-3.5 h-3.5 bg-red-500 border-2 border-[#0A0E17] rounded-full" />
+          )}
+        </button>
+        <button onClick={onLeave} className="p-3.5 rounded-full bg-red-500 hover:bg-red-600 text-white transition-all shadow-lg shadow-red-500/20 ml-2">
+          <PhoneOff className="w-6 h-6" />
+        </button>
+      </div>
+
+      {/* FLOATING SEARCH DRAWER */}
       <div 
         className={cn(
-          "fixed bottom-4 right-4 w-80 md:w-[350px] bg-white/90 dark:bg-[#0A0F18]/90 backdrop-blur-xl rounded-3xl shadow-2xl border border-gray-200/50 dark:border-gray-800 flex flex-col transition-all duration-300 transform origin-bottom-right z-50",
-          showChat ? "h-[500px] max-h-[80vh] scale-100 opacity-100" : "h-0 scale-90 opacity-0 pointer-events-none"
+          "fixed bottom-24 left-4 right-4 md:left-auto md:w-[400px] bg-[#111]/95 backdrop-blur-3xl rounded-3xl shadow-2xl border border-white/10 flex flex-col transition-all duration-300 transform origin-bottom z-50 overflow-hidden",
+          showSearch ? "h-[65vh] md:h-[500px] scale-100 opacity-100" : "h-0 scale-95 opacity-0 pointer-events-none"
         )}
       >
-        <div className="flex items-center justify-between p-4 border-b border-gray-200/50 dark:border-gray-800 shrink-0">
-          <h3 className="font-semibold text-gray-900 dark:text-gray-100 flex items-center gap-2 text-sm tracking-tight">
-            <MessageCircle className="w-4 h-4 text-blue-500" /> Room Chat
+        <div className="flex items-center justify-between p-4 border-b border-white/5 shrink-0 bg-white/5">
+          <h3 className="font-medium text-white flex items-center gap-2 text-sm">
+            <Search className="w-4 h-4 text-blue-400" /> Discover Video
           </h3>
-          <button onClick={() => setShowChat(false)} className="p-1.5 text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-gray-800 rounded-lg transition-colors">
+          <button onClick={() => setShowSearch(false)} className="p-2 text-gray-400 hover:text-white bg-white/5 rounded-full transition-colors">
             <X className="w-4 h-4" />
           </button>
         </div>
 
-        <div className="flex-1 overflow-y-auto p-4 space-y-4 scrollbar-thin scrollbar-thumb-gray-200 dark:scrollbar-thumb-gray-800">
+        <div className="p-4 shrink-0 border-b border-white/5">
+          <form onSubmit={handleUrlSubmit}>
+            <div className="relative flex items-center bg-[#030712] border border-white/10 rounded-2xl p-1 focus-within:border-blue-500/50 transition-colors shadow-inner">
+              <Search className="w-5 h-5 text-gray-500 ml-3 mr-2" />
+              <input
+                type="text"
+                value={urlInput}
+                onChange={(e) => setUrlInput(e.target.value)}
+                placeholder="Search YouTube or paste URL..."
+                className="w-full bg-transparent border-none py-2.5 pr-3 text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-0"
+              />
+              <button disabled={isSearching || !urlInput.trim()} type="submit" className="px-4 py-2 bg-blue-600 text-white rounded-xl text-sm font-medium disabled:opacity-50">
+                {isSearching ? <RefreshCw className="w-4 h-4 animate-spin" /> : "Play"}
+              </button>
+            </div>
+          </form>
+        </div>
+
+        <div className="flex-1 overflow-y-auto px-4 pb-4 scrollbar-thin scrollbar-thumb-white/10 pt-4">
+          {searchResults.length > 0 ? (
+            <div className="flex flex-col gap-3">
+              {searchResults.map((video, index) => (
+                <motion.button
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: index * 0.05 }}
+                  key={`${video.id}-${index}`}
+                  onClick={() => handleSelectVideo(video.url)}
+                  className="w-full flex items-start gap-3 p-2 bg-white/[0.02] hover:bg-white/[0.05] border border-white/[0.05] hover:border-white/10 rounded-2xl transition-all duration-300 text-left group"
+                >
+                  <div className="relative w-28 aspect-video rounded-xl overflow-hidden shadow-lg shrink-0 bg-gray-900 border border-white/5">
+                    <img src={video.thumbnail} alt={video.title} className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-700 ease-out" />
+                    <div className="absolute bottom-1 right-1 bg-black/80 backdrop-blur-md text-white text-[9px] font-bold px-1.5 py-0.5 rounded shadow">
+                      {video.duration}
+                    </div>
+                  </div>
+                  <div className="flex-1 min-w-0 pt-1 pr-1">
+                    <h4 className="font-medium text-xs text-gray-200 line-clamp-2 leading-snug mb-1 group-hover:text-blue-400 transition-colors">{video.title}</h4>
+                    <p className="text-[10px] text-gray-500 font-medium truncate uppercase">{video.author}</p>
+                  </div>
+                </motion.button>
+              ))}
+              {hasMoreSearch && (
+                <button onClick={handleLoadMore} disabled={isSearching} className="w-full py-3 mt-2 bg-white/5 hover:bg-white/10 text-white rounded-xl text-xs font-semibold transition-colors disabled:opacity-50">
+                  {isSearching ? "Loading..." : "Load More"}
+                </button>
+              )}
+            </div>
+          ) : (
+            <div className="h-full flex flex-col items-center justify-center text-gray-500 pb-8">
+              <div className="w-16 h-16 mb-4 bg-white/[0.03] rounded-2xl flex items-center justify-center border border-white/5 shadow-inner">
+                <Play className="w-6 h-6 text-white/30 ml-1" />
+              </div>
+              <p className="text-sm font-medium text-gray-400">Search for a video</p>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* FLOATING CHAT DRAWER */}
+      <div 
+        className={cn(
+          "fixed bottom-24 left-4 right-4 md:left-auto md:w-[360px] bg-[#111]/95 backdrop-blur-3xl rounded-3xl shadow-2xl border border-white/10 flex flex-col transition-all duration-300 transform origin-bottom z-50 overflow-hidden",
+          showChat ? "h-[65vh] md:h-[500px] scale-100 opacity-100" : "h-0 scale-95 opacity-0 pointer-events-none"
+        )}
+      >
+        <div className="flex items-center justify-between p-4 border-b border-white/5 shrink-0 bg-white/5">
+          <h3 className="font-medium text-white flex items-center gap-2 text-sm">
+            <MessageCircle className="w-4 h-4 text-blue-400" /> Room Chat
+          </h3>
+          <button onClick={() => setShowChat(false)} className="p-2 text-gray-400 hover:text-white bg-white/5 rounded-full transition-colors">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-4 space-y-4 scrollbar-thin scrollbar-thumb-white/10">
           {messages.length === 0 ? (
-            <div className="h-full flex items-center justify-center text-gray-500 dark:text-gray-400 text-sm">
-              Say hi to the room! 👋
+            <div className="h-full flex flex-col items-center justify-center text-gray-500">
+              <div className="w-16 h-16 rounded-2xl bg-white/5 flex items-center justify-center mb-4">
+                <MessageCircle className="w-6 h-6 opacity-50" />
+              </div>
+              <span className="text-sm font-medium">Say hi to the room!</span>
             </div>
           ) : (
             messages.map((msg, i) => {
               const isMe = msg.userId === user.id;
               return (
                 <div key={i} className={cn("flex flex-col", isMe ? "items-end" : "items-start")}>
-                  <span className="text-[10px] font-medium text-gray-400 dark:text-gray-500 mb-1 px-1">{isMe ? "You" : msg.userName}</span>
+                  <span className="text-[10px] font-bold uppercase tracking-wider text-gray-500 mb-1.5 px-1">{isMe ? "You" : msg.userName}</span>
                   <div className={cn(
-                    "px-4 py-2.5 max-w-[85%] text-sm shadow-sm",
+                    "px-4 py-2.5 max-w-[85%] text-sm shadow-md",
                     isMe 
                       ? "bg-blue-600 text-white rounded-2xl rounded-tr-sm" 
-                      : "bg-gray-100 dark:bg-gray-800 text-gray-900 dark:text-gray-100 rounded-2xl rounded-tl-sm border border-gray-200/50 dark:border-gray-700/50"
+                      : "bg-white/10 text-white rounded-2xl rounded-tl-sm border border-white/5"
                   )}>
                     {msg.text}
                   </div>
@@ -787,85 +834,88 @@ export function RoomScreen({
           )}
         </div>
 
-        <form onSubmit={sendChat} className="p-3 border-t border-gray-200/50 dark:border-gray-800 shrink-0 flex gap-2">
-          <input
-            type="text"
-            value={chatInput}
-            onChange={(e) => setChatInput(e.target.value)}
-            placeholder="Type a message..."
-            className="flex-1 bg-gray-50 dark:bg-[#111724] border border-gray-200/50 dark:border-gray-700/50 focus:border-blue-500/50 focus:ring-2 focus:ring-blue-500/20 rounded-xl px-4 py-2.5 text-sm outline-none text-gray-900 dark:text-white transition-all placeholder:text-gray-400 dark:placeholder:text-gray-500"
-          />
-          <button 
-            type="submit"
-            disabled={!chatInput.trim()}
-            className="p-3 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white rounded-xl transition-all active:scale-95 shadow-sm disabled:active:scale-100 flex items-center justify-center"
-          >
-            <Send className="w-4 h-4" />
-          </button>
+        <form onSubmit={sendChat} className="p-4 border-t border-white/5 shrink-0 bg-black/20">
+          <div className="flex gap-2">
+            <input
+              type="text"
+              value={chatInput}
+              onChange={(e) => setChatInput(e.target.value)}
+              placeholder="Type a message..."
+              className="flex-1 bg-[#030712] border border-white/10 focus:border-blue-500/50 rounded-xl px-4 py-2.5 text-sm outline-none text-white transition-all placeholder:text-gray-500 shadow-inner"
+            />
+            <button 
+              type="submit"
+              disabled={!chatInput.trim()}
+              className="px-4 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:bg-white/10 disabled:text-gray-500 text-white rounded-xl transition-all shadow-lg flex items-center justify-center"
+            >
+              <Send className="w-4 h-4" />
+            </button>
+          </div>
         </form>
       </div>
 
-      {/* SETTINGS OVERLAY */}
+      {/* SETTINGS MODAL */}
       {showSettings && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
-          <div className="w-full max-w-sm bg-white dark:bg-[#0A0F18] rounded-3xl shadow-2xl border border-gray-200/50 dark:border-gray-800 overflow-hidden flex flex-col">
-            <div className="flex items-center justify-between p-4 border-b border-gray-200/50 dark:border-gray-800">
-              <h3 className="font-semibold text-gray-900 dark:text-gray-100 flex items-center gap-2 text-sm tracking-tight">
-                <Settings className="w-4 h-4 text-blue-500" /> Audio Settings
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/60 backdrop-blur-md">
+          <motion.div 
+            initial={{ opacity: 0, scale: 0.95 }}
+            animate={{ opacity: 1, scale: 1 }}
+            className="w-full max-w-sm bg-[#0A0E17] rounded-[2rem] shadow-2xl border border-white/10 overflow-hidden flex flex-col"
+          >
+            <div className="flex items-center justify-between p-5 border-b border-white/5 bg-white/[0.02]">
+              <h3 className="font-bold text-white flex items-center gap-2 text-base">
+                <Settings className="w-5 h-5 text-blue-500" /> Audio Settings
               </h3>
-              <button onClick={() => setShowSettings(false)} className="p-1.5 text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-gray-800 rounded-lg transition-colors">
+              <button onClick={() => setShowSettings(false)} className="p-2 text-gray-400 hover:text-white bg-white/5 hover:bg-white/10 rounded-xl transition-colors border border-white/5">
                 <X className="w-4 h-4" />
               </button>
             </div>
             
             <div className="p-6 space-y-6">
-              {/* Call Volume */}
-              <div className="space-y-3">
-                <label className="text-sm font-semibold text-gray-700 dark:text-gray-300 flex items-center justify-between">
+              <div className="space-y-4">
+                <label className="text-sm font-bold text-gray-300 flex items-center justify-between">
                   <span>Call Volume</span>
-                  <span className="text-xs text-gray-500">{Math.round(callVolume * 100)}%</span>
+                  <span className="text-xs text-blue-400 bg-blue-500/10 px-2 py-1 rounded-md">{Math.round(callVolume * 100)}%</span>
                 </label>
-                <div className="flex items-center gap-3">
-                  <Volume2 className="w-4 h-4 text-gray-400" />
+                <div className="flex items-center gap-4 bg-white/5 p-3 rounded-2xl border border-white/5">
+                  <Volume2 className="w-5 h-5 text-gray-400 shrink-0" />
                   <input 
                     type="range" 
                     min="0" max="1" step="0.01" 
                     value={callVolume} 
                     onChange={(e) => setCallVolume(parseFloat(e.target.value))}
-                    className="flex-1 accent-blue-500 h-2 bg-gray-200 dark:bg-gray-800 rounded-lg appearance-none cursor-pointer"
+                    className="flex-1 accent-blue-500 h-1.5 bg-white/10 rounded-full appearance-none cursor-pointer"
                   />
                 </div>
               </div>
 
-              {/* Player Volume */}
-              <div className="space-y-3">
-                <label className="text-sm font-semibold text-gray-700 dark:text-gray-300 flex items-center justify-between">
+              <div className="space-y-4">
+                <label className="text-sm font-bold text-gray-300 flex items-center justify-between">
                   <span>Player Volume</span>
-                  <span className="text-xs text-gray-500">{Math.round(playerVolume * 100)}%</span>
+                  <span className="text-xs text-blue-400 bg-blue-500/10 px-2 py-1 rounded-md">{Math.round(playerVolume * 100)}%</span>
                 </label>
-                <div className="flex items-center gap-3">
-                  <Volume2 className="w-4 h-4 text-gray-400" />
+                <div className="flex items-center gap-4 bg-white/5 p-3 rounded-2xl border border-white/5">
+                  <Volume2 className="w-5 h-5 text-gray-400 shrink-0" />
                   <input 
                     type="range" 
                     min="0" max="1" step="0.01" 
                     value={playerVolume} 
                     onChange={(e) => setPlayerVolume(parseFloat(e.target.value))}
-                    className="flex-1 accent-blue-500 h-2 bg-gray-200 dark:bg-gray-800 rounded-lg appearance-none cursor-pointer"
+                    className="flex-1 accent-blue-500 h-1.5 bg-white/10 rounded-full appearance-none cursor-pointer"
                   />
                 </div>
               </div>
 
-              {/* Audio Output */}
               {audioOutputDevices.length > 0 && (
-                <div className="space-y-3 pt-4 border-t border-gray-100 dark:border-gray-800/50">
-                  <label className="text-sm font-semibold text-gray-700 dark:text-gray-300">Call Output Device</label>
+                <div className="space-y-3 pt-6 border-t border-white/5">
+                  <label className="text-sm font-bold text-gray-300">Call Output Device</label>
                   <select 
                     value={selectedAudioOutput} 
                     onChange={(e) => setSelectedAudioOutput(e.target.value)}
-                    className="w-full bg-gray-50 dark:bg-[#111724] border border-gray-200/50 dark:border-gray-700/50 rounded-xl px-4 py-3 text-sm outline-none text-gray-900 dark:text-white transition-all appearance-none"
+                    className="w-full bg-white/5 border border-white/10 hover:border-white/20 rounded-2xl px-4 py-3.5 text-sm outline-none text-white transition-all appearance-none cursor-pointer font-medium"
                   >
                     {audioOutputDevices.map(device => (
-                      <option key={device.deviceId} value={device.deviceId}>
+                      <option key={device.deviceId} value={device.deviceId} className="bg-[#0A0E17] text-white">
                         {device.label || `Speaker ${device.deviceId.slice(0, 5)}...`}
                       </option>
                     ))}
@@ -873,7 +923,7 @@ export function RoomScreen({
                 </div>
               )}
             </div>
-          </div>
+          </motion.div>
         </div>
       )}
     </div>
