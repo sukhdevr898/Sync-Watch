@@ -40,6 +40,12 @@ export function addRecentRoom(roomId: string) {
   localStorage.setItem(RECENT_ROOMS_KEY, JSON.stringify(newRooms));
 }
 
+export function removeRecentRoom(roomId: string) {
+  const rooms = getRecentRooms();
+  const newRooms = rooms.filter(id => id !== roomId);
+  localStorage.setItem(RECENT_ROOMS_KEY, JSON.stringify(newRooms));
+}
+
 export function resetIdentity() {
   localStorage.removeItem(USER_STORAGE_KEY);
   localStorage.removeItem(RECENT_ROOMS_KEY);

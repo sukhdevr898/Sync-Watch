@@ -23,7 +23,16 @@ export default function App() {
     const savedUser = getUser();
     if (savedUser) {
       setUser(savedUser);
-      setCurrentScreen("home");
+      
+      const urlParams = new URLSearchParams(window.location.search);
+      const roomParam = urlParams.get('room');
+      
+      if (roomParam) {
+        setActiveRoomId(roomParam);
+        setCurrentScreen("room");
+      } else {
+        setCurrentScreen("home");
+      }
     }
     
     // Add dark mode classes for theme setup
@@ -37,21 +46,31 @@ export default function App() {
 
   const handleWelcomeComplete = (newUser: User) => {
     setUser(newUser);
-    setCurrentScreen("home");
+    
+    const urlParams = new URLSearchParams(window.location.search);
+    const roomParam = urlParams.get('room');
+    if (roomParam) {
+      setActiveRoomId(roomParam);
+      setCurrentScreen("room");
+    } else {
+      setCurrentScreen("home");
+    }
   };
 
   const handleJoinRoom = (roomId: string) => {
     setActiveRoomId(roomId);
     setCurrentScreen("room");
+    window.history.pushState({}, document.title, window.location.pathname + `?room=${roomId}`);
   };
 
   const handleLeaveRoom = () => {
     setActiveRoomId(null);
     setCurrentScreen("home");
+    window.history.pushState({}, document.title, window.location.pathname);
   };
 
   return (
-    <div className="min-h-screen w-full bg-[#000000] text-gray-100 overflow-x-hidden selection:bg-blue-500/30 transition-colors duration-500 font-sans">
+    <div className="h-[100dvh] w-full bg-[#000000] text-gray-100 overflow-x-hidden selection:bg-blue-500/30 transition-colors duration-500 font-sans">
       
       <AnimatePresence mode="wait">
         {currentScreen === "welcome" && (

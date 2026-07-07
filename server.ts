@@ -159,6 +159,10 @@ async function startServer() {
         socket.to(roomId).emit("webrtc-signal", { from: user.id, signal });
       });
 
+      socket.on("reaction", (data) => {
+        socket.to(roomId).emit("reaction", data);
+      });
+
       socket.on("video-update", (state) => {
         room.videoUrl = state.videoUrl ?? room.videoUrl;
         room.currentTime = state.currentTime ?? room.currentTime;
